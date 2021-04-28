@@ -185,7 +185,7 @@ def main():
                 loss_lists_np, acc_lists_np, dist_errors_np, safety_ratios_epoch, safety_ratios_epoch_lqr = [], [], [], [], []
 
             if np.mod(istep, config.SAVE_STEPS) == 0 or istep + 1 == config.TRAIN_STEPS:
-                saver.save(sess, 'models/model_{}_iter_{}'.format(istep))
+                saver.save(sess, 'models/model_iter_{}'.format(istep))
 
 
 if __name__ == '__main__':
