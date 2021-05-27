@@ -190,7 +190,7 @@ def main():
                     [u, acc_list], feed_dict={s:s_np, s_ref: s_ref_np})
                 if args.vis == 1:
                     u_ref_np = core.quadrotor_controller_np(s_np, s_ref_np)
-                    u_np = clip_norm(u_np - u_ref_np, 10.0) + u_ref_np
+                    u_np = clip_norm(u_np - u_ref_np, 100.0) + u_ref_np
                 dsdt = core.quadrotor_dynamics_np(s_np, u_np)
                 s_np = s_np + dsdt * config.TIME_STEP_EVAL
                 safety_ratio = 1 - np.mean(
