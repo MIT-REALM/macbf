@@ -229,33 +229,6 @@ class Maze(Cityscape):
         self.steps = min(self.max_steps, max_time)
 
 
-class FreeSpace(object):
-
-    def __init__(self, num_agents, steps=8, area_size=10):
-        self.num_agents = num_agents 
-        self.steps = steps
-        self.area_size = area_size
-
-    def reset(self):
-        start_points = np.zeros((self.num_agents, 3), dtype=np.float32)
-        for i in range(self.num_agents):
-            random_start = np.random.randint(low=0, high=10, size=(1, 2))
-            while np.amin(np.linalg.norm(
-                start_points[:, :2] - random_start, axis=1)) < config.DIST_SAFE:
-                random_start = np.random.randint(low=0, high=10, size=(1, 2))
-            start_points[i, :2] = random_start
-        self.start_points = start_points
-        waypoints = [start_points]
-        for t in range(self.steps):
-            random_step = np.random.uniform(-1, 1, size=(self.num_agents, 3))
-            random_step = np.rint(random_step)
-            random_step[:, 2] = np.clip(random_step[:, 2], -1, 1) + 1
-            random_waypoint = waypoints[-1] + random_step
-            random_waypoint = np.clip(random_waypoint, 0, self.area_size)
-            waypoints.append(random_waypoint)
-        self.waypoints = waypoints[1:]
-
-
 def quadrotor_dynamics_np(s, u):
     dsdt = s.dot(np.array(config.A_MAT).T) + u.dot(np.array(config.B_MAT).T)
     return dsdt

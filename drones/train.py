@@ -26,25 +26,26 @@ def build_optimizer(loss):
     optimizer = tf.train.AdamOptimizer(learning_rate=config.LEARNING_RATE)
     trainable_vars = tf.trainable_variables()
 
+    # tensor to accumulate gradients over multiple steps
     accumulators = [
         tf.Variable(
             tf.zeros_like(tv.initialized_value()),
             trainable=False
         ) for tv in trainable_vars]
-
+    # count how many steps we have accumulated
     accumulation_counter = tf.Variable(0.0, trainable=False)
     grad_pairs = optimizer.compute_gradients(loss, trainable_vars)
-
+    # add the gradient to the accumulation tensor
     accumulate_ops = [
         accumulator.assign_add(
             grad
         ) for (accumulator, (grad, var)) in zip(accumulators, grad_pairs)]
 
     accumulate_ops.append(accumulation_counter.assign_add(1.0))
-
+    # divide the accumulated gradient by the number of accumulation steps
     gradient_vars = [(accumulator / accumulation_counter, var)
                      for (accumulator, (grad, var)) in zip(accumulators, grad_pairs)]
-
+    # seperate the gradient of CBF and the controller
     gradient_vars_h = []
     gradient_vars_a = []
     for accumulate_grad, var in gradient_vars:
@@ -57,7 +58,7 @@ def build_optimizer(loss):
 
     train_step_h = optimizer.apply_gradients(gradient_vars_h)
     train_step_a = optimizer.apply_gradients(gradient_vars_a)
-
+    # re-initialize the accmulation tensor and accumulation step to zero
     zero_ops = [
         accumulator.assign(
             tf.zeros_like(tv)
@@ -68,21 +69,34 @@ def build_optimizer(loss):
 
 
 def build_training_graph(num_agents):
-
+    # s is the state vectors of the agents
     s = tf.placeholder(tf.float32, [num_agents, 8])
+    # s_ref is the goal states
     s_ref = tf.placeholder(tf.float32, [num_agents, 8])
-
+    # x is difference between the state of each agent and other agents
     x = tf.expand_dims(s, 1) - tf.expand_dims(s, 0)
+    # h is the CBF value of shape [num_agents, TOP_K, 1], where TOP_K represents
+    # the K nearest agents
     h, mask, indices = core.network_cbf(
         x=x, r=config.DIST_MIN_THRES, indices=None)
+    # u is the control action of each agent, with shape [num_agents, 3]
     u = core.network_action(
         s=s, s_ref=s_ref, obs_radius=config.OBS_RADIUS, indices=indices)
+    # compute the value of loss functions and the accuracies
+    # loss_dang is for h(s) < 0, s in dangerous set
+    # loss safe is for h(s) >=0, s in safe set
+    # acc_dang is the accuracy that h(s) < 0, s in dangerous set is satisfied
+    # acc_safe is the accuracy that h(s) >=0, s in safe set is satisfied
     loss_dang, loss_safe, acc_dang, acc_safe = core.loss_barrier(
         h=h, s=s, indices=indices)
+    # loss_dang_deriv is for doth(s) + alpha h(s) >=0 for s in dangerous set
+    # loss_safe_deriv is for doth(s) + alpha h(s) >=0 for s in safe set
+    # loss_medium_deriv is for doth(s) + alpha h(s) >=0 for s not in the dangerous
+    # or the safe set
     (loss_dang_deriv, loss_safe_deriv, loss_medium_deriv, acc_dang_deriv,
      acc_safe_deriv, acc_medium_deriv) = core.loss_derivatives(
         s=s, u=u, h=h, x=x, indices=indices)
-
+    # the distance between the u and the nominal u
     loss_action = core.loss_actions(s=s, u=u, s_ref=s_ref, indices=indices)
 
     # the weight of each loss item requires careful tuning
@@ -140,12 +154,16 @@ def main():
         
         for istep in range(config.TRAIN_STEPS):
             scene.reset()
+            # the initial state
             s_np = np.concatenate(
                 [scene.start_points, np.zeros((args.num_agents, 5))], axis=1)
+            # set the gradient accumulation tensor to zero
             sess.run(zero_ops)
             for t in range(scene.steps):
+                # for each scene.step, we have a goal (reference) state for each agent
                 s_ref_np = np.concatenate(
                     [scene.waypoints[t], np.zeros((args.num_agents, 5))], axis=1)
+                # run the system and accumulate gradient over multiple steps
                 for i in range(accumulation_steps):
                     u_np, out = sess.run([u, accumulate_ops], feed_dict={
                                          s: s_np, s_ref: s_ref_np})
@@ -161,7 +179,8 @@ def main():
 
             dist_errors_np.append(np.mean(np.linalg.norm(
                 s_np[:, :3] - s_ref_np[:, :3], axis=1)))
-
+            
+            # achieve the same goal states using LQR controllers without considering collision
             s_np = np.concatenate(
                 [scene.start_points, np.zeros((args.num_agents, 5))], axis=1)
             for t in range(scene.steps):

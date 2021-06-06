@@ -27,35 +27,48 @@ def parse_args():
 
 
 def build_evaluation_graph(num_agents):
+    # s is the state vectors of the agents
     s = tf.placeholder(tf.float32, [num_agents, 8])
+    # s_ref is the goal states
     s_ref = tf.placeholder(tf.float32, [num_agents, 8])
-    
+    # x is difference between the state of each agent and other agents
     x = tf.expand_dims(s, 1) - tf.expand_dims(s, 0)
+    # h is the CBF value of shape [num_agents, TOP_K, 1], where TOP_K represents
+    # the K nearest agents
     h, mask, indices = core.network_cbf(
         x=x, r=config.DIST_MIN_THRES, indices=None)
+    # u is the control action of each agent, with shape [num_agents, 3]
     u = core.network_action(
         s=s, s_ref=s_ref, obs_radius=config.OBS_RADIUS, indices=indices)
     safe_mask = core.compute_safe_mask(s, r=config.DIST_SAFE, indices=indices)
+    # check if each agent is safe
     is_safe = tf.equal(tf.reduce_mean(tf.cast(safe_mask, tf.float32)), 1)
 
+    # u_res is delta u. when u does not satisfy the CBF conditions, we want to compute
+    # a u_res such that u + u_res satisfies the CBF conditions
     u_res = tf.Variable(tf.zeros_like(u), name='u_res')
     loop_count = tf.Variable(0, name='loop_count')
    
     def opt_body(u_res, loop_count, is_safe):
+        # a loop of updating u_res
+        # compute s_next under u + u_res
         dsdt = core.quadrotor_dynamics_tf(s, u + u_res)
         s_next = s + dsdt * config.TIME_STEP_EVAL
         x_next = tf.expand_dims(s_next, 1) - tf.expand_dims(s_next, 0)
         h_next, mask_next, _ = core.network_cbf(
             x=x_next, r=config.DIST_MIN_THRES, indices=indices)
+        # deriv should be >= 0. if not, we update u_res by gradient descent
         deriv = h_next - h + config.TIME_STEP_EVAL * config.ALPHA_CBF * h
         deriv = deriv * mask * mask_next
-        error = tf.reduce_sum(tf.math.maximum(-deriv, 0), axis=1)
+        error = tf.reduce_sum(tf.math.maximum(-deriv, 0), axis=1)\
+        # compute the gradient to update u_res
         error_gradient = tf.gradients(error, u_res)[0]
         u_res = u_res - config.REFINE_LEARNING_RATE * error_gradient
         loop_count = loop_count + 1
         return u_res, loop_count, is_safe
 
     def opt_cond(u_res, loop_count, is_safe):
+        # update u_res for REFINE_LOOPS
         cond = tf.logical_and(
             tf.less(loop_count, config.REFINE_LOOPS), 
             tf.logical_not(is_safe))
@@ -66,12 +79,21 @@ def build_evaluation_graph(num_agents):
         u_res, _, _ = tf.while_loop(opt_cond, opt_body, [u_res, loop_count, is_safe])
         u_opt = u + u_res
 
+    # compute the value of loss functions and the accuracies
+    # loss_dang is for h(s) < 0, s in dangerous set
+    # loss safe is for h(s) >=0, s in safe set
+    # acc_dang is the accuracy that h(s) < 0, s in dangerous set is satisfied
+    # acc_safe is the accuracy that h(s) >=0, s in safe set is satisfied
     loss_dang, loss_safe, acc_dang, acc_safe = core.loss_barrier(
         h=h, s=s, indices=indices)
+    # loss_dang_deriv is for doth(s) + alpha h(s) >=0 for s in dangerous set
+    # loss_safe_deriv is for doth(s) + alpha h(s) >=0 for s in safe set
+    # loss_medium_deriv is for doth(s) + alpha h(s) >=0 for s not in the dangerous
+    # or the safe set
     (loss_dang_deriv, loss_safe_deriv, loss_medium_deriv, acc_dang_deriv, 
     acc_safe_deriv, acc_medium_deriv) = core.loss_derivatives(
         s=s, u=u_opt, h=h, x=x, indices=indices)
-
+    # the distance between the u_opt and the nominal u
     loss_action = core.loss_actions(s=s, u=u_opt, s_ref=s_ref, indices=indices)
 
     loss_list = [loss_dang, loss_safe, loss_dang_deriv, 
@@ -132,13 +154,13 @@ def clip_state(s, x_thres, v_thres=0.1, h_thres=6):
 def main():
     args = parse_args()
     s, s_ref, u, loss_list, acc_list = build_evaluation_graph(args.num_agents)
-    
+    # loads the pretrained weights
     vars = tf.trainable_variables()
     vars_restore = []
     for v in vars:
         if 'action' in v.name or 'cbf' in v.name:
             vars_restore.append(v)
-
+    # initialize the tensorflow Session
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
     saver = tf.train.Saver(var_list=vars_restore)
@@ -155,7 +177,7 @@ def main():
         plt.ion()
         plt.close()
         fig = render_init(args.num_agents)
-
+    # initialize the environment
     scene = core.Maze(args.num_agents, max_steps=args.max_steps)
     if args.ref is not None:
         scene.read(args.ref)
@@ -182,9 +204,13 @@ def main():
             [scene.start_points, np.zeros((args.num_agents, 5))], axis=1)
         s_traj = []
         safety_info = np.zeros(args.num_agents, dtype=np.float32)
+        # a scene has a sequence of goal states for each agent. in each scene.step,
+        # we move to a new goal state
         for t in range(scene.steps):
+            # the goal states
             s_ref_np = np.concatenate(
                 [scene.waypoints[t], np.zeros((args.num_agents, 5))], axis=1)
+            # run INNER_LOOPS_EVAL steps to reach the goal state
             for i in range(config.INNER_LOOPS_EVAL):
                 u_np, acc_list_np = sess.run(
                     [u, acc_list], feed_dict={s:s_np, s_ref: s_ref_np})
@@ -215,6 +241,7 @@ def main():
         traj_dict['ours'].append(np.concatenate(s_traj, axis=0))
         end_time = time.time()
 
+        # reach the same goals using LQR controller without considering the collision
         s_np = np.concatenate(
             [scene.start_points, np.zeros((args.num_agents, 5))], axis=1)
         s_traj = []
@@ -236,6 +263,7 @@ def main():
         traj_dict['baseline'].append(np.concatenate(s_traj, axis=0))
 
         if args.vis > 0:
+            # visualize the trajectories
             s_traj_ours = traj_dict['ours'][-1]
             s_traj_baseline = traj_dict['baseline'][-1]
     
