@@ -196,7 +196,7 @@ class Maze(Cityscape):
 
     def reset(self):
         if self.external_traj is False:
-            super().reset()
+            super(Maze, self).reset()
             return
         self.init_obstacles()
         self.init_broadlines()
